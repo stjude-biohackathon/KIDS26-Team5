@@ -20,6 +20,31 @@ it (default: a Nomad agent on the docker host via `host.docker.internal:4646`).
 
 ## Quick start
 
+The stack needs three prerequisites before `docker compose up` succeeds:
+
+1. **Docker** with BuildKit (default in recent versions) and the ability to build
+   the image — the whole app (server + embedded web UI + built-in agent skills)
+   is compiled from this repo's `Dockerfile`.
+2. **The agent skill bundle** — `internal/modules/agent/skillbundle/bundle/`
+   must exist on the host before `docker build` (it is generated, not committed).
+   If it is missing, the Dockerfile stops early and tells you to run
+   `make skills-bundle` (see [../AGENTS.md](../AGENTS.md) "Agent Skills").
+3. **A reachable HashiCorp Nomad agent** — this is the step most people miss.
+   The `antelope` service **panics and the container crash-loops** if it cannot
+   reach Nomad on startup, even in debug mode with placeholder secrets. For a
+   local demo, run a dev agent on the host before `docker compose up`:
+
+   ```bash
+   if ! command -v nomad >/dev/null; then brew install hashicorp/tap/nomad; fi
+   nomad agent -dev -bind 0.0.0.0 &
+   ```
+
+   (The compose file defaults to `ANTELOPE_NOMAD_HOST=http://host.docker.internal`,
+   so the dev agent must bind `0.0.0.0` — the default `127.0.0.1` is *not*
+   reachable from the container.)
+
+Then:
+
 ```bash
 cd docker
 cp .env.example .env        # edit secrets (JWT keys, DB password)

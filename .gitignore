@@ -34,7 +34,9 @@ __pycache__/
 
 # Distribution / packaging
 .Python
-build/
+# Only ignore a root-level Python "build/" output; must not swallow
+# src/web_src/build/ (the Vue Vite config imports plugins from there).
+/build/
 develop-eggs/
 dist/
 downloads/

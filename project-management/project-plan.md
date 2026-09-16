@@ -12,7 +12,7 @@ Go 1.25 + Gin, Vue 3 + Vite + Pinia + Naive UI, PostgreSQL, Redis, HashiCorp Nom
 
 Each task below is scoped to be doable by someone new to this stack in a few hours, and stays out of the trickier backend areas (auth, job dispatch, Nomad wiring). Claim one per person on Day 1.
 
-- [ ] Get the demo stack running locally with `docker compose up -d --build` (see `src/docs/guide/quick-start.md`); fix or clarify one unclear step in that guide - [Owner: FILL]
+- [x] Get the demo stack running locally with `docker compose up -d --build`; clarified the quick-start guide ([`src/docker/README.md`](../src/docker/README.md); the `src/docs/guide/quick-start.md` path referenced here never existed) to call out the two prerequisites that block a fresh boot: the host-side `make skills-bundle` step and a reachable local Nomad dev agent (`nomad agent -dev -bind 0.0.0.0`) - [Owner: Nick Bruggemans]
 - [ ] Complete/align the UI text in `src/web_src/locales/en_US.json` and `zh_CN.json` (JSON editing only, no code logic) - [Owner: FILL]
 - [ ] Register a small, public demo Nextflow pipeline in AnTelOpe and document the exact steps in a new `src/docs/demo-pipeline.md` - [Owner: FILL]
 - [ ] Polish one screen under `src/web_src/src/views/dashboard/workbench` (an empty state, a tooltip, a clearer label) - [Owner: FILL]
