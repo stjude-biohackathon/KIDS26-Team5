@@ -14,7 +14,7 @@ The roles below are suggested to match the six small first tasks in [project-pla
 | Person | Role | Main responsibility | Backup or support needed |
 | --- | --- | --- | --- |
 | [FILL: Name] | Environment & demo pipeline | Get Docker Compose running for the team; register the demo Nextflow pipeline (Tasks 1 & 3) | Some Docker familiarity helps |
-| [FILL: Name] | Content & translations | Complete/align UI text in `en_US.json` / `zh_CN.json` (Task 2) | None expected — JSON editing only |
+| Patrick | Content & translations | Complete/align UI text in `en_US.json` -- ** 11 missing keys found in english version - updated./ `zh_CN.json` (Task 2) | None expected — JSON editing only |
 | [FILL: Name] | Frontend/UI polish | Small, contained Vue/CSS improvement to one dashboard screen (Task 4) | Pairing on API shape questions if needed |
 | [FILL: Name] | Backend error messages | Clarify one user-facing API error string (Task 5) | A short Go walkthrough from the team lead |
 | [FILL: Name] | Docs & demo script | Write the Day 3 demo script and known-limitations doc (Task 6) | None expected |
