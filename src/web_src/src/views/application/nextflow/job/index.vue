@@ -163,7 +163,7 @@ const columns = [
     },
   },
   /*{
-    title: '更新时间',
+    title: 'Update Time',
     align: 'center',
     key: 'updated_at',
     render: (row) => {
@@ -353,7 +353,7 @@ function handleAddTable() {
           <n-form-item label="Status" path="status">
             <n-select
               v-model:value="model.status"
-              placeholder="请选择状态"
+              placeholder="Choose Status"
               :options="[
                 { label: 'All', value: '' },
                 { label: 'Submitted', value: 'submitted' },
