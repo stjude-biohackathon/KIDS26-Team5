@@ -4,6 +4,10 @@ import { NModal, NButton, NSpace } from 'naive-ui'
 import S3FileBrowser from './S3FileBrowser.vue'
 
 const props = defineProps({
+  storageConfigId: {
+    type: [Number, String],
+    default: null,
+  },
   visible: {
     type: Boolean,
     default: false
@@ -91,6 +95,7 @@ defineExpose({
     <S3FileBrowser
       ref="browserRef"
       mode="dialog"
+      :storage-config-id="storageConfigId"
       :show-upload="showUpload"
       :selectable="true"
       :pagination="false"

@@ -26,6 +26,12 @@ import {
 } from '@/api/storage.js'
 
 const props = defineProps({
+  // Which storage configuration to browse. Null means the caller's default,
+  // which the backend resolves as group storage before personal.
+  storageConfigId: {
+    type: [Number, String],
+    default: null,
+  },
   mode: {
     type: String,
     default: 'inline', // 'inline' or 'dialog'
@@ -294,7 +300,7 @@ const getItemIcon = (item) => {
 const loadBuckets = async () => {
   loading.value = true
   try {
-    const res = await fetchBucketList()
+    const res = await fetchBucketList(props.storageConfigId)
     buckets.value = res.data.buckets || []
     currentView.value = 'buckets'
   } catch (error) {
@@ -310,7 +316,7 @@ const loadFiles = async () => {
 
   loading.value = true
   try {
-    const res = await fetchObjectList(currentBucket.value, currentPath.value)
+    const res = await fetchObjectList(currentBucket.value, currentPath.value, props.storageConfigId)
     files.value = res.data.objects || []
     currentView.value = 'files'
   } catch (error) {

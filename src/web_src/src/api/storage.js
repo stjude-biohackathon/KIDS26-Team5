@@ -1,10 +1,23 @@
 import { request } from '@/service/http'
 
 /**
- * Get buckets list
+ * List every storage configuration the current user can reach, personal and
+ * inherited through group membership. Never includes credentials.
  */
-export function fetchBuckets() {
-  return request.Get('/storage/buckets')
+export function fetchStorageConfigs() {
+  return request.Get('/storage/configs')
+}
+
+/**
+ * Get buckets list.
+ *
+ * storageConfigId selects which configuration to browse; omit it to use the
+ * caller's default (group storage before personal).
+ */
+export function fetchBuckets(storageConfigId) {
+  return request.Get('/storage/buckets', {
+    params: storageConfigId ? { storage_config_id: storageConfigId } : {}
+  })
 }
 
 // Alias for backward compatibility
@@ -13,9 +26,13 @@ export const fetchBucketList = fetchBuckets
 /**
  * Get objects in a bucket
  */
-export function fetchObjects(bucket, prefix = '') {
+export function fetchObjects(bucket, prefix = '', storageConfigId) {
   return request.Get('/storage/objects', {
-    params: { bucket, prefix }
+    params: {
+      bucket,
+      prefix,
+      ...(storageConfigId ? { storage_config_id: storageConfigId } : {}),
+    }
   })
 }
 
