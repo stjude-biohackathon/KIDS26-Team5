@@ -1,313 +1,245 @@
 <script setup lang="ts">
-import { useAuthStore } from '@/stores'
+import { ref, computed, onMounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { fetchDashboardStats } from '@/api/dashboard'
+import { useBoolean } from '@/hooks'
 
-const { userInfo } = useAuthStore()
+const { t } = useI18n()
+const { bool: loading, setTrue: startLoading, setFalse: endLoading } = useBoolean(true)
+
+const stats = ref({
+  total_pipelines: 0,
+  ready_pipelines: 0,
+  total_jobs: 0,
+  successful_jobs: 0,
+  failed_jobs: 0,
+  pending_jobs: 0,
+  jobs_today: 0,
+  jobs_this_week: 0,
+  jobs_this_month: 0,
+  pipelines_pending: 0,
+  pipelines_ready: 0,
+  pipelines_failed: 0,
+  pipelines_deleting: 0,
+})
+
+const recentJobs = ref([])
+
+const statCards = computed(() => [
+  {
+    label: t('workbench.statPipelines'),
+    tip: t('workbench.statPipelinesTip'),
+    value: stats.value.total_pipelines,
+    icon: 'carbon:pipelines',
+    color: '#2080f0',
+    iconBg: 'rgba(32, 128, 240, 0.15)',
+    tag: `${stats.value.ready_pipelines} ${t('workbench.tagReady')}`,
+    tagType: 'success',
+  },
+  {
+    label: t('workbench.statTotalJobs'),
+    tip: t('workbench.statTotalJobsTip'),
+    value: stats.value.total_jobs,
+    icon: 'carbon:batch-job',
+    color: '#f59e0b',
+    iconBg: 'rgba(245, 158, 11, 0.15)',
+    tag: `${stats.value.pending_jobs} ${t('workbench.statusPending')}`,
+    tagType: 'warning',
+  },
+  {
+    label: t('workbench.statSuccessfulJobs'),
+    tip: t('workbench.statSuccessfulJobsTip'),
+    value: stats.value.successful_jobs,
+    icon: 'icon-park-outline:chart-pie',
+    color: '#18a058',
+    iconBg: 'rgba(24, 160, 88, 0.15)',
+    tag: `${stats.value.failed_jobs} ${t('workbench.statusFailed')}`,
+    tagType: 'error',
+  },
+  {
+    label: t('workbench.statJobsToday'),
+    tip: t('workbench.statJobsTodayTip'),
+    value: stats.value.jobs_today,
+    icon: 'icon-park-outline:preview-open',
+    color: '#6366f1',
+    iconBg: 'rgba(99, 102, 241, 0.15)',
+    tag: `${stats.value.jobs_this_week} ${t('workbench.tagToday')}`,
+    tagType: 'info',
+  },
+])
+
+const statusConfigMap = {
+  submitted: { type: 'default', text: 'Submitted' },
+  dispatch_success: { type: 'info', text: 'Dispatched' },
+  pending: { type: 'warning', text: 'Pending' },
+  running: { type: 'info', text: 'Running' },
+  completed: { type: 'success', text: 'Completed' },
+  failed: { type: 'error', text: 'Failed' },
+}
+
+const pipelineStatusRows = computed(() => [
+  { type: 'success', label: t('workbench.statusReady'), value: stats.value.pipelines_ready },
+  { type: 'warning', label: t('workbench.statusPending'), value: stats.value.pipelines_pending },
+  { type: 'error', label: t('workbench.statusFailed'), value: stats.value.pipelines_failed },
+  { type: 'info', label: t('workbench.statusDeleting'), value: stats.value.pipelines_deleting },
+])
+
+async function loadDashboardStats() {
+  startLoading()
+  try {
+    const { isSuccess, data } = await fetchDashboardStats()
+    if (isSuccess && data) {
+      stats.value = { ...stats.value, ...(data.stats || {}) }
+      recentJobs.value = data.recent_jobs || []
+    }
+  } catch (error) {
+    console.error('Failed to load dashboard stats:', error)
+  } finally {
+    endLoading()
+  }
+}
+
+onMounted(loadDashboardStats)
 </script>
 
 <template>
-  <n-grid
-    :x-gap="16"
-    :y-gap="16"
-    :cols="3"
-    item-responsive
-    responsive="screen"
-  >
-    <!-- 左侧主要内容区 - 移动端全宽，桌面端2/3宽 -->
-    <n-gi span="3 m:2">
-      <n-space
-        vertical
-        :size="16"
-      >
-        <!-- 图表区域 -->
-<!--        <n-card style="&#45;&#45;n-padding-left: 0;">-->
-<!--          <Chart />-->
-<!--        </n-card>-->
+  <n-spin :show="loading">
+    <n-grid :x-gap="16" :y-gap="16" :cols="3" item-responsive responsive="screen">
+      <!-- 左侧主要内容区 -->
+      <n-gi span="3 m:2">
+        <n-space vertical :size="16">
+          <!-- 统计卡片区域 -->
+          <n-grid :x-gap="16" :y-gap="16" :cols="4" item-responsive responsive="screen">
+            <n-gi v-for="card in statCards" :key="card.label" span="2 l:1">
+              <n-card class="stat-card">
+                <n-thing>
+                  <template #avatar>
+                    <n-el>
+                      <n-icon-wrapper :size="46" :color="card.iconBg" :border-radius="999">
+                        <nova-icon :size="26" :icon="card.icon" :color="card.color" />
+                      </n-icon-wrapper>
+                    </n-el>
+                  </template>
+                  <template #header>
+                    <n-tooltip trigger="hover">
+                      <template #trigger>
+                        <span class="stat-label">{{ card.label }}</span>
+                      </template>
+                      {{ card.tip }}
+                    </n-tooltip>
+                  </template>
+                  <n-statistic tabular-nums>
+                    <n-number-animation show-separator :from="0" :to="card.value" />
+                  </n-statistic>
+                  <template #footer>
+                    <n-tag size="small" :bordered="false" :type="card.tagType">
+                      {{ card.tag }}
+                    </n-tag>
+                  </template>
+                </n-thing>
+              </n-card>
+            </n-gi>
+          </n-grid>
 
-        <!-- 统计卡片区域 -->
-        <n-grid
-          :x-gap="16"
-          :y-gap="16"
-          :cols="4"
-          item-responsive
-          responsive="screen"
-        >
-          <n-gi span="2 l:1">
-            <n-card>
-              <n-thing>
-                <template #avatar>
-                  <n-el>
-                    <n-icon-wrapper :size="46" color="var(--success-color)" :border-radius="999">
-                      <nova-icon :size="26" icon="icon-park-outline:user" />
-                    </n-icon-wrapper>
-                  </n-el>
+          <!-- 最近任务 -->
+          <n-card :title="t('workbench.recentJobs')">
+            <template #header-extra>
+              <n-button quaternary size="small" @click="loadDashboardStats">
+                <template #icon>
+                  <icon-park-outline-refresh />
                 </template>
-                <template #header>
-                  <n-statistic label="活跃用户">
-                    <n-number-animation show-separator :from="0" :to="12039" />
-                  </n-statistic>
+                {{ t('workbench.refresh') }}
+              </n-button>
+            </template>
+            <n-list v-if="recentJobs.length > 0" hoverable>
+              <n-list-item v-for="job in recentJobs" :key="job.id">
+                <template #prefix>
+                  <n-avatar round :size="40" color="#2080f0">
+                    <nova-icon :size="20" icon="carbon:pipelines" color="#fff" />
+                  </n-avatar>
                 </template>
-              </n-thing>
-            </n-card>
-          </n-gi>
-          <n-gi span="2 l:1">
-            <n-card>
-              <n-thing>
-                <template #avatar>
-                  <n-el>
-                    <n-icon-wrapper :size="46" color="var(--success-color)" :border-radius="999">
-                      <nova-icon :size="26" icon="icon-park-outline:every-user" />
-                    </n-icon-wrapper>
-                  </n-el>
-                </template>
-                <template #header>
-                  <n-statistic label="用户">
-                    <n-number-animation show-separator :from="0" :to="44039" />
-                  </n-statistic>
-                </template>
-              </n-thing>
-            </n-card>
-          </n-gi>
-          <n-gi span="2 l:1">
-            <n-card>
-              <n-thing>
-                <template #avatar>
-                  <n-el>
-                    <n-icon-wrapper :size="46" color="var(--success-color)" :border-radius="999">
-                      <nova-icon :size="26" icon="icon-park-outline:preview-open" />
-                    </n-icon-wrapper>
-                  </n-el>
-                </template>
-                <template #header>
-                  <n-statistic label="浏览量">
-                    <n-number-animation show-separator :from="0" :to="551039" />
-                  </n-statistic>
-                </template>
-              </n-thing>
-            </n-card>
-          </n-gi>
-          <n-gi span="2 l:1">
-            <n-card>
-              <n-thing>
-                <template #avatar>
-                  <n-el>
-                    <n-icon-wrapper :size="46" color="var(--success-color)" :border-radius="999">
-                      <nova-icon :size="26" icon="icon-park-outline:star" />
-                    </n-icon-wrapper>
-                  </n-el>
-                </template>
-                <template #header>
-                  <n-statistic label="收藏数">
-                    <n-number-animation show-separator :from="0" :to="7739" />
-                  </n-statistic>
-                </template>
-              </n-thing>
-            </n-card>
-          </n-gi>
-        </n-grid>
-        <n-card title="动态">
-          <template #header-extra>
-            <n-button
-              type="primary"
-              quaternary
-            >
-              更多
-            </n-button>
-          </template>
-          <n-list hoverable>
-            <n-list-item>
-              <template #prefix>
-                <n-avatar
-                  round
-                  :size="48"
-                  :src="userInfo?.avatar"
-                />
-              </template>
-              <n-thing
-                title="客怎车"
-                title-extra="09/29/2022"
-                description="是“我的客厅怎么会有车”的缩写，指那些在车道间肆意穿梭，把马路当客厅的人，多有嘲讽意味，主要用于车祸视频中。"
-              />
-            </n-list-item>
-            <n-list-item>
-              <template #prefix>
-                <n-avatar
-                  round
-                  :size="48"
-                  :src="userInfo?.avatar"
-                />
-              </template>
-              <n-thing
-                title="街健五大神技"
-                title-extra="09/29/2022"
-                description="街头健身五大神技，包括1.单手引体向上。2.慢速双力臂。3.人旗。4.前水平。5.俄式挺身。"
-              />
-            </n-list-item>
-            <n-list-item>
-              <template #prefix>
-                <n-avatar
-                  round
-                  :size="48"
-                  :src="userInfo?.avatar"
-                />
-              </template>
-              <n-thing
-                title="天下岂有七十年太子乎"
-                title-extra="09/29/2022"
-                description="★含义：用来调侃由于英国女王超长的在位时间，导致其长子查理斯王子成为史上等待王位时间最久的王储 "
-              />
-            </n-list-item>
-            <n-list-item>
-              <template #prefix>
-                <n-avatar
-                  round
-                  :size="48"
-                  :src="userInfo?.avatar"
-                />
-              </template>
-              <n-thing
-                title="你干嘛～哈哈～哎哟～"
-                title-extra="09/29/2022"
-                description="出自著名偶像练习生、练习时长两年半、背带异常梳中分的蔡徐坤在2018年的一档综艺节目偶像练习生中出现的一幕"
-              />
-            </n-list-item>
-          </n-list>
-        </n-card>
-      </n-space>
-    </n-gi>
+                <n-thing
+                  :title="`${job.pipeline_name} (v${job.pipeline_version || 'N/A'})`"
+                >
+                  <template #header-extra>
+                    <n-tag
+                      size="small"
+                      :bordered="false"
+                      :type="(statusConfigMap[job.status] || {}).type || 'default'"
+                    >
+                      {{ (statusConfigMap[job.status] || {}).text || job.status }}
+                    </n-tag>
+                  </template>
+                  <template #description>
+                    <span>{{ job.user_email }}</span>
+                    <n-text depth="3" style="margin-left: 8px">
+                      {{ new Date(job.created_at).toLocaleString() }}
+                    </n-text>
+                  </template>
+                </n-thing>
+              </n-list-item>
+            </n-list>
+            <n-empty
+              v-else-if="!loading"
+              :description="t('workbench.recentJobsEmpty')"
+              style="padding: 32px 0"
+            />
+          </n-card>
+        </n-space>
+      </n-gi>
 
-    <!-- 右侧边栏 - 移动端全宽，桌面端1/3宽 -->
-    <n-gi span="3 m:1">
-      <n-space
-        vertical
-        :size="16"
-      >
-        <n-card title="公告">
-          <template #header-extra>
-            <n-button
-              type="primary"
-              quaternary
-            >
-              更多
-            </n-button>
-          </template>
-          <n-list>
-            <n-list-item>
-              <template #prefix>
-                <n-tag
-                  :bordered="false"
-                  type="info"
-                  size="small"
-                >
-                  通知
-                </n-tag>
-              </template>
-              <n-button text>
-                漂洋过海上大专
-              </n-button>
-            </n-list-item>
-            <n-list-item>
-              <template #prefix>
-                <n-tag
-                  :bordered="false"
-                  type="success"
-                  size="small"
-                >
-                  消息
-                </n-tag>
-              </template>
-              <n-button text>
-                你在玩很新的东西
-              </n-button>
-            </n-list-item>
-            <n-list-item>
-              <template #prefix>
-                <n-tag
-                  :bordered="false"
-                  type="warning"
-                  size="small"
-                >
-                  活动
-                </n-tag>
-              </template>
-              <n-button text>
-                上岸第一剑，先斩意中人
-              </n-button>
-            </n-list-item>
-          </n-list>
-        </n-card>
-        <!-- 订单和待办统计 -->
-        <n-grid
-          :x-gap="16"
-          :y-gap="16"
-          :cols="2"
-        >
-          <!-- 移动端和桌面端都是每行2个 -->
-          <n-gi :span="1">
-            <n-card>
-              <n-flex vertical align="center">
-                <n-text depth="3">
-                  订单数
-                </n-text>
-                <n-icon-wrapper :size="46" :border-radius="999">
-                  <nova-icon :size="26" icon="icon-park-outline:all-application" />
-                </n-icon-wrapper>
-                <n-text strong class="text-2xl">
-                  1,234,123
-                </n-text>
-              </n-flex>
-            </n-card>
-          </n-gi>
-          <n-gi :span="1">
-            <n-card>
-              <n-flex vertical align="center">
-                <n-text depth="3">
-                  待办
-                </n-text>
-                <n-el>
-                  <n-icon-wrapper :size="46" color="var(--warning-color)" :border-radius="999">
-                    <nova-icon :size="26" icon="icon-park-outline:list-bottom" />
-                  </n-icon-wrapper>
-                </n-el>
-                <n-text strong class="text-2xl">
-                  78
-                </n-text>
-              </n-flex>
-            </n-card>
-          </n-gi>
-        </n-grid>
-        <n-card title="任务进度">
-          <n-timeline>
-            <n-timeline-item content="啊" />
-            <n-timeline-item
-              type="success"
-              title="成功"
-              content="哪里成功"
-              time="2018-04-03 20:46"
+      <!-- 右侧边栏 -->
+      <n-gi span="3 m:1">
+        <n-space vertical :size="16">
+          <!-- 流水线状态 -->
+          <n-card :title="t('workbench.pipelineStatus')">
+            <n-empty
+              v-if="stats.total_pipelines === 0"
+              :description="t('workbench.pipelineStatusEmpty')"
+              style="padding: 16px 0"
             />
-            <n-timeline-item
-              type="error"
-              content="哪里错误"
-              time="2018-04-03 20:46"
+            <n-space v-else vertical :size="12">
+              <n-space
+                v-for="row in pipelineStatusRows"
+                :key="row.label"
+                justify="space-between"
+              >
+                <n-space align="center" :size="8">
+                  <n-badge dot :type="row.type" />
+                  <n-text>{{ row.label }}</n-text>
+                </n-space>
+                <n-text strong>{{ row.value }}</n-text>
+              </n-space>
+            </n-space>
+          </n-card>
+
+          <!-- 通知公告 -->
+          <n-card :title="t('workbench.announcements')">
+            <n-empty
+              :description="t('workbench.announcementsEmpty')"
+              style="padding: 16px 0"
             />
-            <n-timeline-item
-              type="warning"
-              title="警告"
-              content="哪里警告"
-              time="2018-04-03 20:46"
-            />
-            <n-timeline-item
-              type="info"
-              title="信息"
-              content="是的"
-              time="2018-04-03 20:46"
-              line-type="dashed"
-            />
-            <n-timeline-item content="啊" />
-          </n-timeline>
-        </n-card>
-      </n-space>
-    </n-gi>
-  </n-grid>
+          </n-card>
+        </n-space>
+      </n-gi>
+    </n-grid>
+  </n-spin>
 </template>
 
-<style scoped></style>
+<style scoped>
+.stat-card:hover {
+  transform: translateY(-2px);
+}
+
+.stat-card {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.stat-card :deep(.n-statistic) {
+  text-align: left;
+}
+
+.stat-label {
+  cursor: help;
+}
+</style>
