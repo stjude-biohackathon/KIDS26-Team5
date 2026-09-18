@@ -1,10 +1,12 @@
 package v1
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	nixstorage "antelope/internal/modules/storage"
 	"antelope/pkg/response"
 	"antelope/pkg/types"
 	authsvc "antelope/services/auth"
@@ -18,6 +20,41 @@ type OssHandler struct {
 
 func NewOssHandler(svc osssvc.Service) *OssHandler {
 	return &OssHandler{svc: svc}
+}
+
+// storageConfigID reads the optional ?storage_config_id= selector.
+//
+// Absent or unparseable means zero, which the service reads as "my default"
+// and still authorizes. A bad value therefore falls back to the safe path
+// rather than erroring.
+func storageConfigID(c *gin.Context) nixstorage.ConfigID {
+	raw := c.Query("storage_config_id")
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return nixstorage.ConfigID(n)
+}
+
+// @Summary List accessible storage configurations
+// @Description List every storage configuration the caller can use, personal and group-granted
+// @Tags storage
+// @Produce json
+// @Security BearerAuth
+// @Success 200 {object} map[string]interface{}
+// @Failure 401 {object} map[string]interface{}
+// @Router /storage/configs [get]
+func (h *OssHandler) ListConfigs(c *gin.Context) {
+	userID := authsvc.GetUserID(c)
+	if userID == 0 {
+		response.Fail(c, nil, response.Unauthorized)
+		return
+	}
+	data, err := h.svc.ListConfigs(c.Request.Context(), userID)
+	response.Render(c, data, err)
 }
 
 // @Summary Get storage config
@@ -35,7 +72,7 @@ func (h *OssHandler) GetConfig(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	data, err := h.svc.GetConfig(userID)
+	data, err := h.svc.GetConfig(c.Request.Context(), userID)
 	response.Render(c, data, err)
 }
 
@@ -61,7 +98,7 @@ func (h *OssHandler) SaveConfig(c *gin.Context) {
 		response.Fail(c, nil, response.RequestError)
 		return
 	}
-	response.Render(c, nil, h.svc.SaveConfig(userID, req))
+	response.Render(c, nil, h.svc.SaveConfig(c.Request.Context(), userID, req))
 }
 
 // @Summary Delete storage config
@@ -79,7 +116,7 @@ func (h *OssHandler) DeleteConfig(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	response.Render(c, nil, h.svc.DeleteConfig(userID))
+	response.Render(c, nil, h.svc.DeleteConfig(c.Request.Context(), userID))
 }
 
 // @Summary Test storage connection
@@ -118,7 +155,7 @@ func (h *OssHandler) GetBuckets(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	data, err := h.svc.GetBuckets(c.Request.Context(), userID)
+	data, err := h.svc.GetBuckets(c.Request.Context(), userID, storageConfigID(c))
 	response.Render(c, data, err)
 }
 
@@ -148,7 +185,7 @@ func (h *OssHandler) GetObjects(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	data, err := h.svc.GetObjects(c.Request.Context(), userID, bucket, prefix)
+	data, err := h.svc.GetObjects(c.Request.Context(), userID, storageConfigID(c), bucket, prefix)
 	response.Render(c, data, err)
 }
 
@@ -174,7 +211,7 @@ func (h *OssHandler) GetUploadURL(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	data, err := h.svc.GetUploadURL(c.Request.Context(), userID, req)
+	data, err := h.svc.GetUploadURL(c.Request.Context(), userID, storageConfigID(c), req)
 	response.Render(c, data, err)
 }
 
@@ -200,7 +237,7 @@ func (h *OssHandler) GetDownloadURL(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	data, err := h.svc.GetDownloadURL(c.Request.Context(), userID, req)
+	data, err := h.svc.GetDownloadURL(c.Request.Context(), userID, storageConfigID(c), req)
 	response.Render(c, data, err)
 }
 
@@ -226,7 +263,7 @@ func (h *OssHandler) CreateBucket(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	response.Render(c, nil, h.svc.CreateBucket(c.Request.Context(), userID, req))
+	response.Render(c, nil, h.svc.CreateBucket(c.Request.Context(), userID, storageConfigID(c), req))
 }
 
 // @Summary Delete bucket
@@ -250,7 +287,7 @@ func (h *OssHandler) DeleteBucket(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	response.Render(c, nil, h.svc.DeleteBucket(c.Request.Context(), userID, bucket))
+	response.Render(c, nil, h.svc.DeleteBucket(c.Request.Context(), userID, storageConfigID(c), bucket))
 }
 
 // @Summary Delete object
@@ -278,5 +315,5 @@ func (h *OssHandler) DeleteObject(c *gin.Context) {
 		response.Fail(c, nil, response.Unauthorized)
 		return
 	}
-	response.Render(c, nil, h.svc.DeleteObject(c.Request.Context(), userID, bucket, prefix, recursive))
+	response.Render(c, nil, h.svc.DeleteObject(c.Request.Context(), userID, storageConfigID(c), bucket, prefix, recursive))
 }

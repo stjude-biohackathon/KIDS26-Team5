@@ -5,9 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 )
+
+// ConfigID identifies a storage configuration record.
+//
+// Deliberately a distinct type rather than a bare uint. This module was
+// previously keyed by user id, and every call site passed one; both are uint,
+// so re-keying to configs would have compiled cleanly while silently reading
+// the wrong row. The named type turns that into a compile error.
+type ConfigID uint
 
 // ProviderType identifies which object storage backend to use.
 type ProviderType string
@@ -145,4 +155,31 @@ type StorageProvider interface {
 func defaultComputeHash(rawConfig json.RawMessage) string {
 	sum := sha256.Sum256(rawConfig)
 	return hex.EncodeToString(sum[:])
+}
+
+// EndpointOf extracts the non-secret "host:port" identity of a backend so it
+// can be stored in the clear and matched in SQL.
+//
+// The config hash covers credentials, so it only ever matches people who share
+// one credential. Two researchers issued separate keys to the same server hash
+// differently while pointing at identical data — which matters, because the
+// classification of that data has to apply to both. Endpoint is what catches
+// that case.
+//
+// Returns "" for providers whose shape is unknown; callers treat that as
+// "cannot match by endpoint" rather than as a wildcard.
+func EndpointOf(providerType ProviderType, rawConfig json.RawMessage) string {
+	switch providerType {
+	case ProviderMinio, ProviderS3:
+		var cfg MinioConfig
+		if err := json.Unmarshal(rawConfig, &cfg); err != nil {
+			return ""
+		}
+		if cfg.Host == "" {
+			return ""
+		}
+		return fmt.Sprintf("%s:%d", strings.ToLower(cfg.Host), cfg.Port)
+	default:
+		return ""
+	}
 }

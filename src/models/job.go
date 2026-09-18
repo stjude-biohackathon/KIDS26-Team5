@@ -13,6 +13,18 @@ type Job struct {
 	AllocId    string          `gorm:"type:varchar(64);index;comment:'nomad task allocation id'" json:"alloc_id"`
 	UserId     *uint           `gorm:"index;comment:'user id'" json:"user_id"`
 	PipelineId *uint           `gorm:"index;comment:'pipeline id'" json:"pipeline_id"`
+
+	// GroupId attributes the run's compute cost to a lab or grant. Reporting
+	// only — job authorization is still ownership-based via CheckJobOwnership.
+	//
+	// Stamped at submit time because it cannot be reconstructed later: once a
+	// storage config is re-granted or edited, there is no way to work backwards
+	// to the group a past run belonged to.
+	GroupId *uint `gorm:"index;comment:'group the run is attributed to'" json:"group_id,omitempty"`
+
+	// StorageConfigId records which storage the run used, so a later audit can
+	// tell where its inputs and outputs actually live.
+	StorageConfigId uint `gorm:"index;comment:'storage config used for this run'" json:"storage_config_id,omitempty"`
 	Status     string          `gorm:"type:varchar(20);not null"` // values: "submitted", "dispatch_success", "pending", "running", "completed", "failed"
 	Params     json.RawMessage `gorm:"type:jsonb;comment:'pipeline input parameters'" json:"params"`
 

@@ -31,9 +31,12 @@ import (
 	agentsvc "antelope/services/agent"
 	agenttools "antelope/services/agent/tools"
 	apikeysvc "antelope/services/apikey"
+	auditsvc "antelope/services/audit"
 	authsvc "antelope/services/auth"
+	authzsvc "antelope/services/authz"
 	cachesvc "antelope/services/cache"
 	dashsvc "antelope/services/dashboard"
+	groupsvc "antelope/services/group"
 	jobsvc "antelope/services/job"
 	llmcfgsvc "antelope/services/llmconfig"
 	notifsvc "antelope/services/notification"
@@ -88,6 +91,9 @@ type RouterManager struct {
 	llmCfgSvc llmcfgsvc.Service
 	notifSvc  notifsvc.Service
 	apikeySvc apikeysvc.Service
+	authzSvc  authzsvc.Authorizer
+	groupSvc  groupsvc.Service
+	auditSvc  auditsvc.Recorder
 }
 
 // New creates a RouterManager and eagerly builds all services.
@@ -170,8 +176,19 @@ func (rm *RouterManager) buildServices() error { //nolint:unparam // error retur
 	rm.authSvc = authsvc.NewService(db, jwtCfg, rm.cfg.System.IsProduction(), rm.sessionStore, rdb, rm.deps.GetSecretBox())
 	rm.userSvc = usersvc.NewService(db, rm.sessionStore)
 	rm.pipeSvc = pipelinesvc.NewService(db, rdb, nomadJobs, rm.cfg.Nomad)
-	rm.jobSvc = jobsvc.NewService(db, nomadJobs, nomadC, jobsvc.Config{Task: taskCfg}, sseM, stor)
-	rm.ossSvc = osssvc.NewOssService(stor)
+	// Authorization is built before the services that consult it. A failure
+	// here is fatal by design: starting with an empty policy would silently
+	// deny every user rather than fail loudly.
+	authorizer, err := authzsvc.New(db, rdb)
+	if err != nil {
+		return fmt.Errorf("build authorizer: %w", err)
+	}
+	rm.authzSvc = authorizer
+
+	rm.auditSvc = auditsvc.NewRecorder(db)
+	rm.ossSvc = osssvc.NewOssService(stor, authorizer, rm.auditSvc, db, rm.cfg.System.PersonalStorageAllowed())
+	rm.groupSvc = groupsvc.NewService(db, stor, authorizer)
+	rm.jobSvc = jobsvc.NewService(db, nomadJobs, nomadC, jobsvc.Config{Task: taskCfg}, sseM, stor, rm.ossSvc)
 	rm.dashSvc = dashsvc.NewService(db)
 	rm.cacheSvc = cachesvc.NewService(db, rdb, mailer)
 
@@ -282,6 +299,8 @@ func (rm *RouterManager) registerPublicAndPrivateRoutes(r *gin.Engine) {
 	tplH := v1.NewJobTemplateHandler(db)
 	notifH := v1.NewNotificationHandler(rm.notifSvc, rm.deps.GetRedis(), rm.deps.GetSSE())
 	apikeyH := v1.NewAPIKeyHandler(rm.apikeySvc)
+	groupH := v1.NewGroupHandler(rm.groupSvc)
+	auditH := v1.NewAuditHandler(rm.auditSvc)
 
 	// ── Route groups ─────────────────────────────────────────────────────
 	pub := r.Group("/api/v1")
@@ -302,4 +321,6 @@ func (rm *RouterManager) registerPublicAndPrivateRoutes(r *gin.Engine) {
 	rm.registerProxyRoutes(priv)
 	rm.registerNotificationRoutes(priv, notifH)
 	rm.registerAPIKeyRoutes(priv, apikeyH)
+	rm.registerGroupRoutes(priv, groupH, superOnlyMW)
+	rm.registerAuditRoutes(priv, auditH, superOnlyMW)
 }

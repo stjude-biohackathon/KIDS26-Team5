@@ -12,6 +12,10 @@ type JobAddDto struct {
 	PipelineName    string          `json:"pipeline_name" binding:"required,nonblank"`
 	PipelineVersion string          `json:"pipeline_version" binding:"required,nonblank"`
 	PipelineParams  json.RawMessage `json:"pipeline_params" binding:"required,nonblank"`
+
+	// StorageConfigId names which storage the run should use. Zero means "my
+	// default", which resolves to group storage ahead of personal.
+	StorageConfigId uint `json:"storage_config_id,omitempty"`
 }
 
 func (j *JobAddDto) JobId() string {
