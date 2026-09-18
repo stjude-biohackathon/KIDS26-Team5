@@ -2,7 +2,7 @@
   "common": {
     "cancel": "Cancel",
     "confirm": "Confirm",
-    "close": "Closure",
+    "close": "Close",
     "reload": "Refresh",
     "choose": "Choose",
     "navigate": "Navigate",
@@ -147,6 +147,17 @@
     "authSetting": "Auth Providers",
     "appRoot": "Home",
     "monitor": "Monitoring",
+    "multi": "Multi-level menu demo",
+    "multi2": "Multi-level menu child page",
+    "multi2Detail": "Multi-level menu detail",
+    "multi3": "Multi-level menu",
+    "multi4": "Multi-level menu 3-1",
+    "list": "List",
+    "commonList": "Common list",
+    "cardList": "Card list",
+    "draggableList": "Draggable list",
+    "demo": "Examples",
+    "fetch": "Request example",
     "dashboard": "Dashboard",
     "workbench": "Workbench",
     "nextflow": "Nextflow",
@@ -207,7 +218,7 @@
       "message": "Copied successfully",
       "tooltip": "Copy",
       "unsupportedError": "Your browser does not support Clipboard API",
-      "unpermittedError": "Crrently not permitted to use Clipboard API"
+      "unpermittedError": "Currently not permitted to use Clipboard API"
     }
   }
 }
