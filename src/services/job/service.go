@@ -17,6 +17,7 @@ import (
 	"antelope/pkg/apperr"
 	"antelope/pkg/response"
 	"antelope/pkg/types"
+	"antelope/services/authz"
 
 	nomad "github.com/hashicorp/nomad/api"
 	"go.uber.org/zap"
@@ -52,6 +53,13 @@ type Service interface {
 	ReconcileStaleDispatches(olderThan time.Duration) (int64, error)
 }
 
+// StorageResolver is the slice of the storage service job submission needs:
+// pick a config for a user and confirm they may write to it. Narrow interface
+// rather than the whole service so the dependency stays legible.
+type StorageResolver interface {
+	ResolveConfigForUser(ctx context.Context, userID uint, requested nixstorage.ConfigID, action authz.Action) (*nixstorage.StorageConfig, error)
+}
+
 type jobService struct {
 	db          *gorm.DB
 	nomadJobs   NomadJobsAPI
@@ -59,15 +67,17 @@ type jobService struct {
 	cfg         Config
 	sse         *sse.Manager
 	storage     *nixstorage.ClientManager
+	storageSvc  StorageResolver
 }
 
-func NewService(db *gorm.DB, nomadJobs NomadJobsAPI, nomadClient *nomad.Client, cfg Config, sse *sse.Manager, storage *nixstorage.ClientManager) Service {
+func NewService(db *gorm.DB, nomadJobs NomadJobsAPI, nomadClient *nomad.Client, cfg Config, sse *sse.Manager, storage *nixstorage.ClientManager, storageSvc StorageResolver) Service {
 	return &jobService{
 		db:          db,
 		nomadJobs:   nomadJobs,
 		nomadClient: nomadClient,
 		cfg:         cfg,
 		sse:         sse,
+		storageSvc:  storageSvc,
 		storage:     storage,
 	}
 }
@@ -118,14 +128,32 @@ func (s *jobService) GetUserJobs(userID uint, page, pageSize int) (map[string]an
 const nomadDispatchTimeout = 60 * time.Second
 
 func (s *jobService) AddJob(dto types.JobAddDto) error {
-	storageConfig, err := s.getUserMinioConfig(dto.UserId)
+	ctx := context.Background()
+
+	// Resolve which storage this run writes to and confirm the user may write
+	// there. A run produces output, so read access is not enough.
+	cfgRecord, err := s.storageSvc.ResolveConfigForUser(
+		ctx, dto.UserId, nixstorage.ConfigID(dto.StorageConfigId), authz.ActionWrite)
 	if err != nil {
-		log.L().Error("failed to get user storage config",
-			zap.Uint("userId", dto.UserId), zap.Error(err))
+		return err
+	}
+
+	storageConfig, err := s.minioConfigFor(cfgRecord.ID)
+	if err != nil {
+		log.L().Error("failed to load storage credentials",
+			zap.Uint("userId", dto.UserId), zap.Uint("configID", uint(cfgRecord.ID)), zap.Error(err))
 		return apperr.CheckFail(response.CheckFailCode, response.StorageNotConfigured)
 	}
 
-	newJobPtr, err := createJobWithUserAndPipeline(s.db, dto.UserId, dto.PipelineName, dto.PipelineVersion, dto.PipelineParams)
+	// Attribute the run to a group so compute spend rolls up to whoever funds
+	// it. Group-owned storage names the group directly; for personal storage we
+	// fall back to the user's primary group, because the cluster time is
+	// institutional either way and a null here would drop the run out of the
+	// rollup entirely.
+	groupID := s.attributionGroup(ctx, dto.UserId, cfgRecord)
+
+	newJobPtr, err := createJobWithUserAndPipeline(
+		s.db, dto.UserId, dto.PipelineName, dto.PipelineVersion, dto.PipelineParams, groupID, cfgRecord.ID)
 	if err != nil {
 		return apperr.ServerError(response.JobCreateError)
 	}
@@ -343,7 +371,39 @@ func (s *jobService) deleteNomadDispatchedJob(nomadDispatchID string) error {
 	return nil
 }
 
-func createJobWithUserAndPipeline(db *gorm.DB, userID uint, pipelineName, pipelineVersion string, params json.RawMessage) (*models.Job, error) {
+// attributionGroup decides which group a run is billed to.
+//
+// Returns nil only when the user belongs to no group at all, which is the one
+// case where there is genuinely nothing to attribute to.
+func (s *jobService) attributionGroup(ctx context.Context, userID uint, cfg *nixstorage.StorageConfig) *uint {
+	if cfg != nil && cfg.OwnerType == nixstorage.OwnerTypeGroup {
+		id := cfg.OwnerID
+		return &id
+	}
+
+	var membership models.GroupMembership
+	err := s.db.WithContext(ctx).
+		Where("user_id = ?", userID).
+		Order("role_in_group = 'owner' DESC, id ASC").
+		First(&membership).Error
+	if err != nil {
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			log.L().Warn("failed to resolve attribution group",
+				zap.Uint("userID", userID), zap.Error(err))
+		}
+		return nil
+	}
+	return &membership.GroupID
+}
+
+func createJobWithUserAndPipeline(
+	db *gorm.DB,
+	userID uint,
+	pipelineName, pipelineVersion string,
+	params json.RawMessage,
+	groupID *uint,
+	storageConfigID nixstorage.ConfigID,
+) (*models.Job, error) {
 	var newJob models.Job
 
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -368,6 +428,8 @@ func createJobWithUserAndPipeline(db *gorm.DB, userID uint, pipelineName, pipeli
 		newJob = models.Job{
 			UserId:          &userID,
 			PipelineId:      &pipeline.ID,
+			GroupId:         groupID,
+			StorageConfigId: uint(storageConfigID),
 			Status:          "submitted",
 			Params:          params,
 			UserEmail:       user.Email,
@@ -383,16 +445,20 @@ func createJobWithUserAndPipeline(db *gorm.DB, userID uint, pipelineName, pipeli
 	return &newJob, nil
 }
 
-func (s *jobService) getUserMinioConfig(userID uint) (*nixstorage.MinioConfig, error) {
+// minioConfigFor loads the credentials for an already-authorized config.
+//
+// Authorization happens in AddJob before this is called; this function only
+// unwraps the stored secret.
+func (s *jobService) minioConfigFor(configID nixstorage.ConfigID) (*nixstorage.MinioConfig, error) {
 	if s.storage == nil {
-		return nil, fmt.Errorf("storage not configured for user %d", userID)
+		return nil, fmt.Errorf("storage manager unavailable")
 	}
-	cfg, err := s.storage.GetProviderConfig(userID)
+	cfg, err := s.storage.GetProviderConfig(configID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get storage config: %w", err)
 	}
 	if cfg == nil {
-		return nil, fmt.Errorf("storage not configured for user %d", userID)
+		return nil, fmt.Errorf("storage config %d not found", configID)
 	}
 	var minioConfig nixstorage.MinioConfig
 	if err := json.Unmarshal(cfg.RawConfig, &minioConfig); err != nil {

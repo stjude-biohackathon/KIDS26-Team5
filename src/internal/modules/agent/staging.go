@@ -64,7 +64,7 @@ func newObjectFetcher(sm *storage.ClientManager, userID uint, atts []AttachmentR
 			primed[a.Bucket+"/"+a.Key] = a.Data
 		}
 	}
-	return storageObjectFetcher{c: sm.GetClient(userID), primed: primed}
+	return storageObjectFetcher{c: sm.PersonalClientForUser(userID), primed: primed}
 }
 
 // attachmentInputSpecs maps chat attachments to workspace InputSpecs. Each

@@ -257,4 +257,17 @@ export const staticRoutes = [
     // Super only
     roles: [ROLE_SUPER],
   },
+  {
+    name: 'groupSetting',
+    path: '/setting/group',
+    title: 'Groups & Storage',
+    requiresAuth: true,
+    icon: 'icon-park-outline:peoples',
+    componentPath: '/setting/group/index.vue',
+    id: 604,
+    pid: 6,
+    // Super only: granting storage to a group decides who can read controlled
+    // data, which is the separation-of-duties boundary for this feature.
+    roles: [ROLE_SUPER],
+  },
 ]

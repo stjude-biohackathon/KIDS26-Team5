@@ -145,6 +145,7 @@
     "skillsSetting": "Agent Skills",
     "apiKeySetting": "API Keys",
     "authSetting": "Auth Providers",
+    "groupSetting": "Groups & Storage",
     "appRoot": "Home",
     "monitor": "Monitoring",
     "dashboard": "Dashboard",

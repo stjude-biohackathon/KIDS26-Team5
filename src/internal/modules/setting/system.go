@@ -14,6 +14,22 @@ type SystemConfig struct {
 	// emitted. Set via ANTELOPE_SYSTEM_ENCRYPT_KEY; generate one with
 	// `openssl rand -base64 32`.
 	EncryptKey string `mapstructure:"encrypt-key" json:"encrypt-key" yaml:"encrypt-key"`
+	// AllowPersonalStorage controls whether users may register their own
+	// object-storage credentials in addition to the storage they inherit
+	// through group membership. Deployments handling controlled data can turn
+	// it off entirely; individual groups can also forbid it for their members
+	// (Group.AllowPersonalStorage), and the two compose most-restrictive-wins.
+	// Defaults to true. Set via ANTELOPE_SYSTEM_ALLOW_PERSONAL_STORAGE.
+	AllowPersonalStorage *bool `mapstructure:"allow-personal-storage" json:"allow-personal-storage" yaml:"allow-personal-storage"`
+}
+
+// PersonalStorageAllowed reports the platform-level setting, defaulting to true
+// when unset so existing deployments keep working after an upgrade.
+func (s *SystemConfig) PersonalStorageAllowed() bool {
+	if s.AllowPersonalStorage == nil {
+		return true
+	}
+	return *s.AllowPersonalStorage
 }
 
 func (s *SystemConfig) GetGinMode() (mode string) {

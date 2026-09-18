@@ -155,3 +155,8 @@ dmypy.json
 .pyre/
 .myenv/
 requirements.txt
+
+# Go build output and runtime logs. The compiled server is ~114MB and the
+# rotated logs grow without bound, so neither belongs in the history.
+src/bin/
+src/log/

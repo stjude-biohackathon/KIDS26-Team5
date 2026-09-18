@@ -455,7 +455,7 @@ func (s *PerUserS3Artifact) PresignedPutURL(
 // clientFor resolves both the per-user storage client and the workspace
 // bucket from settings.
 func (s *PerUserS3Artifact) clientFor(ctx context.Context, userID uint) (storage.StorageClient, string, error) {
-	client := s.storage.GetClient(userID)
+	client := s.storage.PersonalClientForUser(userID)
 	if client == nil {
 		return nil, "", fmt.Errorf("storage is not configured for user %d", userID)
 	}

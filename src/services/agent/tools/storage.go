@@ -66,7 +66,7 @@ func (t *browseStorageTool) Call(ctx context.Context, jsonArgs []byte) (any, err
 		}
 	}
 
-	client := t.storage.GetClient(userID)
+	client := t.storage.PersonalClientForUser(userID)
 	if client == nil {
 		return map[string]any{"error": "no storage is configured for this user"}, nil
 	}
@@ -151,7 +151,7 @@ func (t *getDownloadURLTool) Call(ctx context.Context, jsonArgs []byte) (any, er
 		return nil, errors.New("bucket and key are required")
 	}
 
-	client := t.storage.GetClient(userID)
+	client := t.storage.PersonalClientForUser(userID)
 	if client == nil {
 		return map[string]any{"error": "no storage is configured for this user"}, nil
 	}

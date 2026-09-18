@@ -23,7 +23,7 @@ import {
 } from 'naive-ui'
 import S3FileBrowserDialog from '@/components/custom/S3FileBrowserDialog.vue'
 import { fetchDispatchJob } from '@/api/job.js'
-import { fetchStorageConfig } from '@/api/storage'
+import { fetchStorageConfigs } from '@/api/storage'
 import { fetchPipelineSchema } from '@/api/pipeline'
 
 const router = useRouter()
@@ -31,9 +31,13 @@ const route = useRoute()
 const message = useMessage()
 const { modifyTab } = useTabStore()
 
-// Storage configuration state
-const storageConfigured = ref(false)
+// Storage the run will read inputs from and write results to.
+// Populated from every configuration the user can reach, personal and
+// inherited through group membership.
+const storageConfigs = ref([])
+const selectedStorageId = ref(null)
 const checkingStorage = ref(true)
+const mayAddPersonal = ref(true)
 
 // Update tab title
 const { fullPath, query } = route
@@ -208,7 +212,10 @@ const submitJobHandler = async () => {
     const payload = {
       pipeline_name: pipelineInfo.value.name,
       pipeline_version: pipelineInfo.value.version,
-      pipeline_params: changedParams.value
+      pipeline_params: changedParams.value,
+      // Omitted when nothing is selected so the backend applies its own
+      // default rather than us guessing on its behalf.
+      ...(selectedStorageId.value ? { storage_config_id: selectedStorageId.value } : {}),
     }
 
     // console.log('Submitting job:', JSON.stringify(payload, null, 2))
@@ -227,20 +234,96 @@ const submitJobHandler = async () => {
   }
 }
 
-// Check storage configuration
-const checkStorageConfig = async () => {
+// Load every storage configuration this user can reach, not just the writable
+// ones. A run has to write its results somewhere, so only writable storage can
+// be selected — but dropping the rest here is what made the page claim a user
+// with read-only group storage had none at all.
+//
+// The backend returns group storage before personal, and applies the same
+// ordering when a request names no configuration, so defaulting to the first
+// writable entry matches what a submit without an explicit choice would do.
+const loadStorageConfigs = async () => {
   checkingStorage.value = true
   try {
-    const { isSuccess, data } = await fetchStorageConfig()
-    if (isSuccess && data?.config) {
-      storageConfigured.value = data.config.configured
+    const { isSuccess, data } = await fetchStorageConfigs()
+    if (isSuccess && data) {
+      storageConfigs.value = data.configs || []
+      mayAddPersonal.value = data.may_add_personal !== false
+      // Never default to a config the user cannot write to; that selection
+      // would be rejected at dispatch.
+      selectedStorageId.value = storageConfigs.value.find(c => c.writable)?.id ?? null
     }
   } catch (err) {
-    console.error('Failed to check storage config:', err)
+    console.error('Failed to load storage configurations:', err)
   } finally {
     checkingStorage.value = false
   }
 }
+
+const writableConfigs = computed(() => storageConfigs.value.filter(c => c.writable))
+const readOnlyConfigs = computed(() => storageConfigs.value.filter(c => !c.writable))
+
+const hasAnyStorage = computed(() => storageConfigs.value.length > 0)
+const hasWritableStorage = computed(() => writableConfigs.value.length > 0)
+
+// Reachable storage exists, but none of it can receive results. Worth saying
+// out loud rather than rendering the same "you have no storage" message.
+const readOnlyOnly = computed(() => hasAnyStorage.value && !hasWritableStorage.value)
+
+// One option is not a choice — showing a picker with a single entry is noise,
+// and a disabled read-only row is not a second option, so it must not be what
+// brings the picker back.
+const showStoragePicker = computed(() => writableConfigs.value.length > 1)
+
+// With a single writable config the picker stays hidden, but silently dropping
+// read-only storage is the bug being fixed, so the card still appears to name
+// what exists and why it is unavailable.
+const showStorageCard = computed(
+  () => hasWritableStorage.value && (showStoragePicker.value || readOnlyConfigs.value.length > 0),
+)
+
+const selectedStorage = computed(
+  () => storageConfigs.value.find(c => c.id === selectedStorageId.value) || null,
+)
+
+// Where the user's access comes from. owner_type alone is not enough: a config
+// registered personally by someone else and shared with a group still reports
+// "personal", and calling that the user's own storage is backwards.
+const scopeLabel = (c) => {
+  if (c.owner_type === 'group') return c.owner_name || 'group'
+  if (c.owned) return 'personal'
+  if (c.shared_via?.length) return `shared via ${c.shared_via.join(', ')}`
+  return 'shared'
+}
+
+const storageOptions = computed(() =>
+  storageConfigs.value.map(c => ({
+    label: c.writable
+      ? `${c.name} — ${scopeLabel(c)} (${c.classification})`
+      : `${c.name} — ${scopeLabel(c)} (${c.classification}) — read-only, cannot receive results`,
+    value: c.id,
+    disabled: !c.writable,
+  })),
+)
+
+// The groups that could actually fix a read-only situation, de-duplicated
+// across configs so the message names each one once.
+const readOnlySources = computed(() => {
+  const names = new Set()
+  readOnlyConfigs.value.forEach(c => {
+    if (c.owner_type === 'group' && c.owner_name) {
+      names.add(c.owner_name)
+    }
+    ;(c.shared_via || []).forEach(name => names.add(name))
+  })
+  return [...names]
+})
+
+// Personal only when it is actually theirs; everything else is shared and its
+// results will be visible to the group it came from.
+const selectedIsShared = computed(
+  () => !!selectedStorage.value && !selectedStorage.value.owned,
+)
 
 // Navigate to storage settings
 const goToStorageSettings = () => {
@@ -250,7 +333,7 @@ const goToStorageSettings = () => {
 // Lifecycle
 onMounted(async () => {
   // Check storage configuration first
-  await checkStorageConfig()
+  await loadStorageConfigs()
 
   if (!pipelineInfo.value.name || !pipelineInfo.value.repository) {
     error.value = 'Missing pipeline information'
@@ -286,24 +369,116 @@ onMounted(async () => {
       </div>
     </NCard>
 
-    <!-- Storage Warning -->
+    <!-- No storage reachable at all -->
     <NAlert
-      v-if="!checkingStorage && !storageConfigured"
+      v-if="!checkingStorage && !hasAnyStorage"
       type="warning"
-      title="Storage Not Configured"
-      closable
+      title="No storage available"
     >
       <template #icon>
         <icon-park-outline-attention />
       </template>
-      You have not configured your S3/MinIO storage. File path parameters in this form require a configured
-      data source to browse and select files. Please configure your storage before submitting jobs with path parameters.
+      <template v-if="mayAddPersonal">
+        This run has nowhere to read inputs from or write results to. Configure
+        your own storage, or ask an administrator to grant your group access to
+        shared storage.
+      </template>
+      <template v-else>
+        You have no storage you can write to, and your group policy does not
+        permit personal storage. Ask your group owner to grant access to shared
+        storage.
+      </template>
       <template #action>
-        <NButton size="small" type="warning" @click="goToStorageSettings">
+        <NButton v-if="mayAddPersonal" size="small" type="warning" @click="goToStorageSettings">
           Configure Storage
         </NButton>
       </template>
     </NAlert>
+
+    <!-- Storage exists but none of it can receive results -->
+    <NAlert
+      v-else-if="!checkingStorage && readOnlyOnly"
+      type="warning"
+      title="Your storage is read-only"
+    >
+      <template #icon>
+        <icon-park-outline-attention />
+      </template>
+      A run writes its results back to storage, so it needs write access. You
+      can read the following, but not write to it:
+      <ul class="my-2 pl-5">
+        <li v-for="config in readOnlyConfigs" :key="config.id">
+          {{ config.name }} — {{ scopeLabel(config) }} ({{ config.classification }})
+        </li>
+      </ul>
+      <template v-if="readOnlySources.length">
+        Ask an owner of {{ readOnlySources.join(' or ') }} to raise your access
+        from read to write.
+      </template>
+      <template v-else>
+        Ask the owner of this storage to grant you write access.
+      </template>
+      <template v-if="mayAddPersonal">
+        You can also configure storage of your own to run against instead.
+      </template>
+      <template #action>
+        <NButton v-if="mayAddPersonal" size="small" type="warning" @click="goToStorageSettings">
+          Configure Storage
+        </NButton>
+      </template>
+    </NAlert>
+
+    <!-- Storage picker: shown only when there is an actual choice to make -->
+    <NCard v-else-if="showStorageCard" size="small" title="Storage for this run">
+      <NSpace vertical size="small">
+        <NSelect
+          v-if="showStoragePicker"
+          v-model:value="selectedStorageId"
+          :options="storageOptions"
+          class="max-w-2xl"
+        />
+        <NSpace align="center" :size="6">
+          <NTag
+            v-if="selectedStorage"
+            size="small"
+            :type="selectedIsShared ? 'success' : 'default'"
+          >
+            {{ selectedIsShared ? 'Shared' : 'Personal' }}
+          </NTag>
+          <NTag
+            v-if="selectedStorage"
+            size="small"
+            :type="
+              ['restricted', 'phi'].includes(selectedStorage.classification)
+                ? 'warning'
+                : 'default'
+            "
+          >
+            {{ selectedStorage.classification }}
+          </NTag>
+          <n-text depth="3" class="text-xs">
+            <template v-if="selectedIsShared">
+              Results land in storage shared with
+              {{ selectedStorage.owner_name || selectedStorage.shared_via?.join(', ') || 'your group' }}
+              and stay available to the group.
+            </template>
+            <template v-else>
+              Results land in your personal storage and will not be visible to
+              your group.
+            </template>
+          </n-text>
+        </NSpace>
+
+        <!-- When the picker is hidden there is nowhere else for read-only
+             storage to appear, and leaving it out is what made it look absent. -->
+        <n-text v-if="!showStoragePicker && readOnlyConfigs.length" depth="3" class="text-xs">
+          You can also read
+          <template v-for="(config, index) in readOnlyConfigs" :key="config.id">
+            <template v-if="index">, </template>{{ config.name }} ({{ scopeLabel(config) }})</template
+          >, but runs cannot write results there.
+        </n-text>
+      </NSpace>
+    </NCard>
 
     <!-- Loading State -->
     <NCard v-if="loading">
@@ -478,10 +653,12 @@ onMounted(async () => {
       </NSpace>
     </NCard>
 
-    <!-- S3 File Browser Dialog -->
+    <!-- S3 File Browser Dialog. Browses the storage selected above, so the
+         paths offered are ones the run will actually be able to read. -->
     <S3FileBrowserDialog
       v-model:visible="showFileBrowser"
       title="Select File or Directory"
+      :storage-config-id="selectedStorageId"
       :show-upload="false"
       @select="handleFileSelect"
     />

@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -138,8 +137,14 @@ func (m *ClientManager) provider(t ProviderType) (StorageProvider, error) {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-// GetClient returns the StorageClient for userID with lazy loading and cross-node
-// config validation via Redis.
+// GetClient returns the StorageClient for configID with lazy loading and
+// cross-node config validation via Redis.
+//
+// Keyed by storage config, not by user: one config may be shared by every
+// member of a group, so the client and its cache entry belong to the config.
+// Deciding *which* config a user may reach is the caller's job — this manager
+// is deliberately ignorant of authorization and will hand back a client for any
+// config id it is given.
 //
 //   - local cache hit → validate hash against Redis → return or reload
 //   - cache miss → singleflight → load config → create → cache → return
@@ -147,19 +152,19 @@ func (m *ClientManager) provider(t ProviderType) (StorageProvider, error) {
 //     Redis miss (and repopulating the cache); see getConfigFromRedis
 //   - Redis unavailable on a cache hit → return cached client as fallback
 //   - no config anywhere → return nil
-func (m *ClientManager) GetClient(userID uint) StorageClient {
+func (m *ClientManager) GetClient(configID ConfigID) StorageClient {
 	if m.redisClient == nil {
 		log.L().Warn("Redis client not available, cannot get storage client")
 		return nil
 	}
 
-	cacheKey := localCacheKey(userID)
+	cacheKey := localCacheKey(configID)
 
 	// ── L1: local cache ───────────────────────────────────────────────────────
 	if cached, found := m.localCache.Get(cacheKey); found {
 		entry := cached.(*cachedEntry)
 
-		redisConfig, err := m.getConfigFromRedis(userID)
+		redisConfig, err := m.getConfigFromRedis(configID)
 		if err != nil {
 			// DESIGN (intentional, not a bug): fail-open. When Redis is
 			// unreachable we cannot revalidate the config hash across pods, so we
@@ -171,7 +176,7 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 			// ever required even during a Redis outage, add a pub/sub invalidation
 			// channel instead of shortening the TTL.
 			log.L().Warn("failed to reach Redis, using cached client as fallback",
-				zap.Uint("userID", userID),
+				zap.Uint("configID", uint(configID)),
 				zap.Error(err))
 			return entry.client
 		}
@@ -188,7 +193,7 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 
 		// Config changed across nodes — fall through to recreate.
 		log.L().Info("storage config changed, recreating client",
-			zap.Uint("userID", userID),
+			zap.Uint("configID", uint(configID)),
 			zap.String("providerType", string(redisConfig.Type)))
 	}
 
@@ -198,10 +203,10 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 		// goroutine may have already populated it.  We verify the hash here
 		// too (unlike the original) to avoid returning a stale entry when the
 		// cache-miss was triggered by a config change.
-		redisConfig, err := m.getConfigFromRedis(userID)
+		redisConfig, err := m.getConfigFromRedis(configID)
 		if err != nil {
 			log.L().Error("failed to load storage config from Redis",
-				zap.Uint("userID", userID),
+				zap.Uint("configID", uint(configID)),
 				zap.Error(err))
 			return nil, err
 		}
@@ -220,7 +225,7 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 		client, err := m.createClientFromConfig(redisConfig)
 		if err != nil {
 			log.L().Error("failed to create storage client",
-				zap.Uint("userID", userID),
+				zap.Uint("configID", uint(configID)),
 				zap.String("providerType", string(redisConfig.Type)),
 				zap.Error(err))
 			return nil, err
@@ -232,7 +237,7 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 		}, m.cacheTTL)
 
 		log.L().Debug("created and cached storage client",
-			zap.Uint("userID", userID),
+			zap.Uint("configID", uint(configID)),
 			zap.String("providerType", string(redisConfig.Type)))
 
 		return client, nil
@@ -244,111 +249,127 @@ func (m *ClientManager) GetClient(userID uint) StorageClient {
 	return v.(StorageClient)
 }
 
-// SetClient validates the config by attempting a real connection (Ping),
-// then persists it to Redis and updates the local cache.
+// ValidateConfig creates and pings a client without persisting anything,
+// returning the validated client alongside the envelope and serialised JSON
+// the caller needs to store it.
 //
 // rawConfig must be a valid JSON encoding of the config struct expected by
 // the given providerType (e.g. MinioConfig for ProviderMinio).
-func (m *ClientManager) SetClient(userID uint, providerType ProviderType, rawConfig json.RawMessage) (StorageClient, error) {
-	if m.redisClient == nil {
-		return nil, errors.New("storage: Redis client not available")
-	}
-
+func (m *ClientManager) ValidateConfig(providerType ProviderType, rawConfig json.RawMessage) (StorageClient, ProviderConfig, []byte, error) {
 	p, err := m.provider(providerType)
 	if err != nil {
-		return nil, err
+		return nil, ProviderConfig{}, nil, err
 	}
 
-	// Validate by creating and pinging the client before persisting anything.
 	client, err := p.CreateClient(rawConfig)
 	if err != nil {
-		return nil, err
+		return nil, ProviderConfig{}, nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	if err := client.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("storage: connection validation failed: %w", err)
+		return nil, ProviderConfig{}, nil, fmt.Errorf("storage: connection validation failed: %w", err)
 	}
 
-	hash := p.ComputeHash(rawConfig)
 	envelope := ProviderConfig{
 		Type:      providerType,
 		RawConfig: rawConfig,
-		Hash:      hash,
+		Hash:      p.ComputeHash(rawConfig),
 	}
 
 	configJSON, err := json.Marshal(envelope)
 	if err != nil {
-		return nil, fmt.Errorf("storage: failed to serialise config: %w", err)
+		return nil, ProviderConfig{}, nil, fmt.Errorf("storage: failed to serialise config: %w", err)
 	}
+	return client, envelope, configJSON, nil
+}
+
+// SetClient validates rawConfig, writes it to the existing config record, and
+// refreshes both caches. Use CreateConfig for a config that does not exist yet.
+func (m *ClientManager) SetClient(configID ConfigID, providerType ProviderType, rawConfig json.RawMessage) (StorageClient, error) {
+	client, envelope, configJSON, err := m.ValidateConfig(providerType, rawConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := EndpointOf(providerType, rawConfig)
 
 	// Durable source of truth first (encrypted at rest when a key is configured)
 	// so the config survives a Redis flush/eviction.
-	if err := m.saveToDB(userID, envelope, configJSON); err != nil {
+	if err := m.UpdateConfigPayload(configID, envelope, configJSON, endpoint); err != nil {
 		return nil, fmt.Errorf("storage: failed to persist config: %w", err)
 	}
 
-	// Redis is a rebuildable cache — best-effort. Postgres remains authoritative.
-	// Encrypt at rest in Redis too (when a key is configured), matching the
-	// durable Postgres copy.
-	saveCtx := context.Background()
-	if payload, encErr := m.encodeConfigForCache(configJSON); encErr != nil {
-		log.L().Warn("failed to encrypt storage config for Redis cache",
-			zap.Uint("userID", userID), zap.Error(encErr))
-	} else if err := m.redisClient.Set(saveCtx, redisConfigKey(userID), payload, 0).Err(); err != nil {
-		log.L().Warn("failed to cache storage config in Redis (Postgres holds the source of truth)",
-			zap.Uint("userID", userID), zap.Error(err))
-	}
-
-	cacheKey := localCacheKey(userID)
-	m.localCache.Set(cacheKey, &cachedEntry{
-		client:     client,
-		configHash: hash,
-	}, m.cacheTTL)
+	m.primeCaches(configID, client, envelope.Hash, configJSON)
 
 	log.L().Info("saved storage config and created client",
-		zap.Uint("userID", userID),
+		zap.Uint("configID", uint(configID)),
 		zap.String("providerType", string(providerType)))
 
 	return client, nil
 }
 
-// RemoveClient deletes the config from the durable store and Redis cache and
-// evicts the local cache entry.
-func (m *ClientManager) RemoveClient(userID uint) error {
-	// Durable store first — it is authoritative.
-	if err := m.deleteFromDB(userID); err != nil {
-		return fmt.Errorf("storage: failed to delete config: %w", err)
-	}
-
+// primeCaches writes a freshly validated config into Redis and the local cache.
+// Redis is a rebuildable cache — best-effort. Postgres remains authoritative.
+// The Redis copy is encrypted too (when a key is configured), matching the
+// durable one, so secrets are not exposed via snapshots or a memory dump.
+func (m *ClientManager) primeCaches(configID ConfigID, client StorageClient, hash string, configJSON []byte) {
 	if m.redisClient != nil {
 		ctx := context.Background()
-		if err := m.redisClient.Del(ctx, redisConfigKey(userID)).Err(); err != nil {
-			// Best-effort: the durable record is already gone, and the cache
-			// entry will expire / be re-derived from Postgres (now empty).
-			log.L().Warn("failed to delete storage config from Redis cache",
-				zap.Uint("userID", userID), zap.Error(err))
+		if payload, encErr := m.encodeConfigForCache(configJSON); encErr != nil {
+			log.L().Warn("failed to encrypt storage config for Redis cache",
+				zap.Uint("configID", uint(configID)), zap.Error(encErr))
+		} else if err := m.redisClient.Set(ctx, redisConfigKey(configID), payload, 0).Err(); err != nil {
+			log.L().Warn("failed to cache storage config in Redis (Postgres holds the source of truth)",
+				zap.Uint("configID", uint(configID)), zap.Error(err))
 		}
 	}
 
-	m.localCache.Delete(localCacheKey(userID))
-	log.L().Info("removed storage client", zap.Uint("userID", userID))
+	m.localCache.Set(localCacheKey(configID), &cachedEntry{
+		client:     client,
+		configHash: hash,
+	}, m.cacheTTL)
+}
+
+// RemoveClient deletes the config from the durable store and both caches.
+func (m *ClientManager) RemoveClient(configID ConfigID) error {
+	// Durable store first — it is authoritative.
+	if err := m.DeleteConfig(configID); err != nil {
+		return fmt.Errorf("storage: failed to delete config: %w", err)
+	}
+	log.L().Info("removed storage client", zap.Uint("configID", uint(configID)))
 	return nil
 }
 
-// HasClient reports whether userID has a config stored (Redis cache or the
-// durable store). Checking the durable store means a Redis flush does not make
-// configured users appear unconfigured.
-func (m *ClientManager) HasClient(userID uint) bool {
+// evict drops a config from the Redis and local caches, leaving the durable
+// record alone. Called after any write that changes what the cached client
+// should be.
+func (m *ClientManager) evict(configID ConfigID) {
 	if m.redisClient != nil {
 		ctx := context.Background()
-		if exists, err := m.redisClient.Exists(ctx, redisConfigKey(userID)).Result(); err == nil && exists > 0 {
+		if err := m.redisClient.Del(ctx, redisConfigKey(configID)).Err(); err != nil {
+			// Best-effort: the cache entry expires anyway and is re-derived
+			// from Postgres.
+			log.L().Warn("failed to evict storage config from Redis cache",
+				zap.Uint("configID", uint(configID)), zap.Error(err))
+		}
+	}
+	m.localCache.Delete(localCacheKey(configID))
+}
+
+// HasClient reports whether configID has a config stored (Redis cache or the
+// durable store). Checking the durable store means a Redis flush does not make
+// configured storage appear unconfigured.
+func (m *ClientManager) HasClient(configID ConfigID) bool {
+	if m.redisClient != nil {
+		ctx := context.Background()
+		if exists, err := m.redisClient.Exists(ctx, redisConfigKey(configID)).Result(); err == nil && exists > 0 {
 			return true
 		}
 	}
-	return m.existsInDB(userID)
+	return m.existsInDB(configID)
 }
 
 // Count returns the number of entries in the local cache (not Redis total).
@@ -363,59 +384,24 @@ func (m *ClientManager) ClearLocalCache() {
 	log.L().Info("cleared local storage client cache")
 }
 
-// GetProviderConfig returns the stored ProviderConfig for userID from Redis.
-// Returns nil, nil when no config exists for that user.
-func (m *ClientManager) GetProviderConfig(userID uint) (*ProviderConfig, error) {
+// GetProviderConfig returns the stored ProviderConfig for configID.
+// Returns nil, nil when no such config exists.
+func (m *ClientManager) GetProviderConfig(configID ConfigID) (*ProviderConfig, error) {
 	if m.redisClient == nil {
-		return nil, errors.New("storage: Redis client not available")
+		// Fall back to the durable store so a Redis-less setup still resolves.
+		return m.loadFromDB(configID)
 	}
-	return m.getConfigFromRedis(userID)
-}
-
-// SyncConfigToRedis writes a config to Redis without touching the local cache.
-// Useful for initial data migration or manual cross-node sync.
-func (m *ClientManager) SyncConfigToRedis(userID uint, providerType ProviderType, rawConfig json.RawMessage) error {
-	if m.redisClient == nil {
-		return errors.New("storage: Redis client not available")
-	}
-
-	p, err := m.provider(providerType)
-	if err != nil {
-		return err
-	}
-
-	hash := p.ComputeHash(rawConfig)
-	envelope := ProviderConfig{
-		Type:      providerType,
-		RawConfig: rawConfig,
-		Hash:      hash,
-	}
-
-	configJSON, err := json.Marshal(envelope)
-	if err != nil {
-		return fmt.Errorf("storage: failed to serialise config: %w", err)
-	}
-
-	ctx := context.Background()
-	payload, err := m.encodeConfigForCache(configJSON)
-	if err != nil {
-		return fmt.Errorf("storage: failed to encrypt config for Redis: %w", err)
-	}
-	if err := m.redisClient.Set(ctx, redisConfigKey(userID), payload, 0).Err(); err != nil {
-		return fmt.Errorf("storage: failed to write config to Redis: %w", err)
-	}
-
-	return nil
+	return m.getConfigFromRedis(configID)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-func redisConfigKey(userID uint) string {
-	return fmt.Sprintf("%s%d", redisKeyPrefix, userID)
+func redisConfigKey(configID ConfigID) string {
+	return fmt.Sprintf("%s%d", redisKeyPrefix, configID)
 }
 
-func localCacheKey(userID uint) string {
-	return strconv.FormatUint(uint64(userID), 10)
+func localCacheKey(configID ConfigID) string {
+	return strconv.FormatUint(uint64(configID), 10)
 }
 
 // encodeConfigForCache serialises an already-marshalled envelope for the Redis
@@ -447,13 +433,13 @@ func (m *ClientManager) decodeConfigFromCache(raw string) (*ProviderConfig, erro
 	return &cfg, nil
 }
 
-func (m *ClientManager) getConfigFromRedis(userID uint) (*ProviderConfig, error) {
+func (m *ClientManager) getConfigFromRedis(configID ConfigID) (*ProviderConfig, error) {
 	ctx := context.Background()
-	raw, err := m.redisClient.Get(ctx, redisConfigKey(userID)).Result()
+	raw, err := m.redisClient.Get(ctx, redisConfigKey(configID)).Result()
 	if err == redis.Nil {
 		// Cache miss — fall back to the durable store and repopulate the cache.
 		// This is what makes the config survive a Redis flush/eviction.
-		cfg, dbErr := m.loadFromDB(userID)
+		cfg, dbErr := m.loadFromDB(configID)
 		if dbErr != nil {
 			return nil, dbErr
 		}
@@ -463,10 +449,10 @@ func (m *ClientManager) getConfigFromRedis(userID uint) (*ProviderConfig, error)
 		if rejson, mErr := json.Marshal(cfg); mErr == nil {
 			if payload, encErr := m.encodeConfigForCache(rejson); encErr != nil {
 				log.L().Warn("failed to encrypt storage config for Redis cache",
-					zap.Uint("userID", userID), zap.Error(encErr))
-			} else if sErr := m.redisClient.Set(ctx, redisConfigKey(userID), payload, 0).Err(); sErr != nil {
+					zap.Uint("configID", uint(configID)), zap.Error(encErr))
+			} else if sErr := m.redisClient.Set(ctx, redisConfigKey(configID), payload, 0).Err(); sErr != nil {
 				log.L().Warn("failed to repopulate storage config cache from durable store",
-					zap.Uint("userID", userID), zap.Error(sErr))
+					zap.Uint("configID", uint(configID)), zap.Error(sErr))
 			}
 		}
 		return cfg, nil

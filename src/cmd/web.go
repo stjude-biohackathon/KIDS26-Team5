@@ -5,11 +5,13 @@ import (
 
 	appmod "antelope/internal/app"
 	"antelope/internal/modules/llmconfig"
+	"antelope/internal/modules/log"
 	"antelope/internal/modules/storage"
 	"antelope/models"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/urfave/cli/v3"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -51,13 +53,25 @@ var CmdWeb = &cli.Command{
 				if err := storage.MigrateSchema(db); err != nil {
 					return err
 				}
+				// Runs inside the migration lock so a multi-pod rollout does
+				// not race to copy the same legacy rows.
+				if err := storage.BackfillPersonalConfigs(db); err != nil {
+					return err
+				}
 				return llmconfig.MigrateSchema(db)
 			}),
-			appmod.WithSeed(func(db *gorm.DB, _ redis.UniversalClient, _ *storage.ClientManager) {
+			appmod.WithSeed(func(db *gorm.DB, _ redis.UniversalClient, sm *storage.ClientManager) {
 				models.Seed(db, models.SeedConfig{
 					SuperUser:         cfg.System.SuperUser,
 					SuperUserPassword: cfg.System.SuperUserPassword,
 				})
+				// Needs the manager's encryption key, so it cannot run in the
+				// migration step above.
+				if sm != nil {
+					if err := sm.BackfillEndpoints(); err != nil {
+						log.L().Error("failed to backfill storage endpoints", zap.Error(err))
+					}
+				}
 			}),
 		)
 		defer a.Shutdown()

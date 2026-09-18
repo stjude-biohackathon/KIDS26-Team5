@@ -181,6 +181,7 @@
     "skillsSetting": "智能体技能",
     "apiKeySetting": "API 密钥",
     "authSetting": "认证提供方",
+    "groupSetting": "群组与存储",
     "dashboard": "控制台",
     "workbench": "工作台",
     "monitor": "监控页",

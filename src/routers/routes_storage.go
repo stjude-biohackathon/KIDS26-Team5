@@ -9,6 +9,7 @@ import (
 func (rm *RouterManager) registerStorageRoutes(priv *gin.RouterGroup, h *v1.OssHandler) {
 	stor := priv.Group("/storage")
 	{
+		stor.GET("/configs", h.ListConfigs)
 		stor.GET("/config", h.GetConfig)
 		stor.POST("/config", h.SaveConfig)
 		stor.DELETE("/config", h.DeleteConfig)

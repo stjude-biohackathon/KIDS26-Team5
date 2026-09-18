@@ -1,7 +1,13 @@
 <script setup>
-import { ref, onMounted } from 'vue'
-import { NSpace, NCard, NButton, useMessage, NForm, NFormItem, NInput, NInputNumber, NSwitch, NAlert } from 'naive-ui'
-import { fetchStorageConfig, saveStorageConfig, deleteStorageConfig, testStorageConnection } from '@/api/storage'
+import { ref, computed, onMounted } from 'vue'
+import { NSpace, NCard, NButton, NTag, useMessage, NForm, NFormItem, NInput, NInputNumber, NSwitch, NAlert } from 'naive-ui'
+import {
+  fetchStorageConfig,
+  fetchStorageConfigs,
+  saveStorageConfig,
+  deleteStorageConfig,
+  testStorageConnection,
+} from '@/api/storage'
 import { useBoolean } from '@/hooks'
 
 const message = useMessage()
@@ -31,10 +37,37 @@ const configRules = {
   secret_key: { required: true, message: 'Please enter the secret key', trigger: 'blur' },
 }
 
+// Storage reachable through group membership. Read-only here: this page edits
+// the caller's own credentials, and a member never sees the keys behind shared
+// storage. Without it the page tells a user who has group storage that they
+// have none, which is how this screen came to be misleading.
+const sharedConfigs = ref([])
+
+const hasSharedStorage = computed(() => sharedConfigs.value.length > 0)
+
 // Load storage configuration on mount
 onMounted(async () => {
-  await loadStorageConfig()
+  await Promise.all([loadStorageConfig(), loadSharedConfigs()])
 })
+
+async function loadSharedConfigs() {
+  try {
+    const { isSuccess, data } = await fetchStorageConfigs()
+    if (isSuccess && data) {
+      sharedConfigs.value = (data.configs || []).filter(c => !c.owned)
+    }
+  } catch (error) {
+    console.error('Failed to load shared storage:', error)
+  }
+}
+
+// Where a shared config comes from: its owning group, or the groups that grant
+// it when it was registered personally by someone else and shared.
+function sourceLabel(config) {
+  if (config.owner_type === 'group') return config.owner_name || 'Group'
+  if (config.shared_via?.length) return config.shared_via.join(', ')
+  return 'Shared'
+}
 
 async function loadStorageConfig() {
   startConfigLoading()
@@ -140,7 +173,10 @@ async function handleDeleteConfig() {
     <!-- Info Alert -->
     <NAlert type="info" title="Storage Configuration">
       Configure your S3/MinIO storage to enable file browsing and path selection for pipeline jobs.
-      This configuration is personal to your account and required before using storage-related features.
+      This configuration is personal to your account.
+      <template v-if="hasSharedStorage">
+        You can also use the storage shared with you below without configuring anything.
+      </template>
     </NAlert>
 
     <!-- Storage Configuration Card -->
@@ -212,17 +248,23 @@ async function handleDeleteConfig() {
             </n-space>
           </n-space>
 
-          <n-empty v-else size="large" description="No storage configured">
+          <n-empty v-else size="large" description="No personal storage configured">
             <template #icon>
               <icon-park-outline-cloud-storage class="text-4xl text-gray-400" />
             </template>
             <template #extra>
-              <n-button type="primary" @click="openConfigForm">
-                <template #icon>
-                  <icon-park-outline-add />
-                </template>
-                Configure Storage
-              </n-button>
+              <n-space vertical align="center">
+                <n-text v-if="hasSharedStorage" depth="3" class="text-center">
+                  You can already use the storage shared with you below. Add a
+                  personal configuration only if you need storage of your own.
+                </n-text>
+                <n-button type="primary" @click="openConfigForm">
+                  <template #icon>
+                    <icon-park-outline-add />
+                  </template>
+                  Configure Storage
+                </n-button>
+              </n-space>
             </template>
           </n-empty>
         </template>
@@ -301,6 +343,51 @@ async function handleDeleteConfig() {
           </n-form>
         </template>
       </n-spin>
+    </n-card>
+
+    <!-- Storage reached through group membership. No edit or delete actions:
+         the caller does not own these, and offering the affordance would only
+         produce a rejection from the backend. -->
+    <n-card v-if="hasSharedStorage" title="Shared With You">
+      <template #header-extra>
+        <NTag size="small">Read-only here</NTag>
+      </template>
+
+      <n-space vertical size="large">
+        <n-text depth="3">
+          You can browse and use this storage, but it is managed by its owners —
+          credentials are never shown and cannot be changed from this page.
+        </n-text>
+
+        <n-descriptions
+          v-for="config in sharedConfigs"
+          :key="config.id"
+          :column="2"
+          label-placement="left"
+          bordered
+          :title="config.name"
+        >
+          <n-descriptions-item label="Shared By">
+            <NTag size="small" type="success">{{ sourceLabel(config) }}</NTag>
+          </n-descriptions-item>
+          <n-descriptions-item label="Classification">
+            <NTag
+              size="small"
+              :type="['restricted', 'phi'].includes(config.classification) ? 'warning' : 'default'"
+            >
+              {{ config.classification }}
+            </NTag>
+          </n-descriptions-item>
+          <n-descriptions-item label="Endpoint">
+            <n-text code>{{ config.endpoint || '—' }}</n-text>
+          </n-descriptions-item>
+          <n-descriptions-item label="Your Access">
+            <NTag size="small" :type="config.writable ? 'success' : 'default'">
+              {{ config.writable ? 'Read and write' : 'Read-only' }}
+            </NTag>
+          </n-descriptions-item>
+        </n-descriptions>
+      </n-space>
     </n-card>
   </NSpace>
 </template>

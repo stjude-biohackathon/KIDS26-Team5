@@ -194,7 +194,7 @@ func (s *service) deleteConversationFiles(ctx context.Context, userID uint, sess
 	if len(atts) == 0 {
 		return
 	}
-	client := s.storage.GetClient(userID)
+	client := s.storage.PersonalClientForUser(userID)
 	if client == nil {
 		return
 	}
@@ -249,7 +249,7 @@ func (s *service) SendMessageStream(
 
 	var client storage.StorageClient
 	if s.storage != nil {
-		client = s.storage.GetClient(userID)
+		client = s.storage.PersonalClientForUser(userID)
 	}
 	// Replace client-reported attachment sizes with stat'ed truth before
 	// anything uses Size for memory or transfer decisions.
