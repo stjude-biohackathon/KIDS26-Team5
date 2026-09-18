@@ -2,7 +2,7 @@
   "common": {
     "cancel": "Cancel",
     "confirm": "Confirm",
-    "close": "Closure",
+    "close": "Close",
     "reload": "Refresh",
     "choose": "Choose",
     "navigate": "Navigate",
@@ -11,7 +11,7 @@
     "all": "All"
   },
   "app": {
-    "loginOut": "Login out",
+    "loginOut": "Log out",
     "loginOutContent": "Confirm to log out of current account?",
     "loginOutTitle": "Sign out",
     "userCenter": "Personal center",
@@ -207,7 +207,7 @@
       "message": "Copied successfully",
       "tooltip": "Copy",
       "unsupportedError": "Your browser does not support Clipboard API",
-      "unpermittedError": "Crrently not permitted to use Clipboard API"
+      "unpermittedError": "Currently not permitted to use Clipboard API"
     }
   }
 }
