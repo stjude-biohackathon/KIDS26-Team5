@@ -1,0 +1,154 @@
+# Antelope configuration template — copy to `config.yaml` and edit.
+#
+#   cp config.yaml.example config.yaml
+#
+# Best-practice split:
+#   - config.yaml ........ structural defaults, lists, non-secret tunables.
+#   - ANTELOPE_* env vars  per-deployment scalars, hosts, and ALL secrets.
+#
+# Override priority: ANTELOPE_* env var > config.yaml > built-in defaults.
+# Every nested key maps to an env var: `postgresql.password` ->
+# ANTELOPE_POSTGRESQL_PASSWORD (dots and dashes both become underscores).
+#
+# In RELEASE mode the server fails fast at start-up if the per-deployment
+# secrets below are empty or left at a shipped default (see .env.example).
+# In DEBUG mode it only warns. config.yaml itself is git-ignored; commit only
+# this sanitized template.
+
+# jwt: signing keys are secrets — set them via env in any real deployment.
+jwt:
+  access-signing-key: "" # ANTELOPE_JWT_ACCESS_SIGNING_KEY (required in release)
+  access-expires-time: 24h
+  refresh-signing-key: "" # ANTELOPE_JWT_REFRESH_SIGNING_KEY (required in release)
+  refresh-expires-time: 168h
+  issuer: antelope
+
+# postgresql: host/credentials are per-deployment — prefer env. password is a
+# secret and required in release.
+postgresql:
+  host: localhost
+  port: 5432
+  db: antelope
+  username: postgres
+  password: "" # ANTELOPE_POSTGRESQL_PASSWORD (required in release)
+  sslmode: disable
+
+# redis: password is a secret — set via ANTELOPE_REDIS_PASSWORD when enabled.
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  password: ""
+
+# nomad: host/port/token are per-deployment. The rest are pipeline
+# job-registration defaults that are fine to keep in version control.
+nomad:
+  host: http://10.48.196.154 # ANTELOPE_NOMAD_HOST (required in release)
+  port: 4646
+  namespace: default
+  region: global
+  # Nomad ACL token (SecretID) for a remote, ACL-enabled cluster. Override via
+  # ANTELOPE_NOMAD_TOKEN. Leave empty for a no-auth Nomad server (local dev
+  # with ACLs disabled).
+  token: ""
+  datacenters:
+    - cab
+  cores: 2
+  memory: 8000
+  nextflow-url: "https://github.com/nextflow-io/nextflow/releases/download/v25.04.8/nextflow-25.04.8-dist"
+
+# zap logger.
+#
+# NOTE: `format`, `encode-level` and `prefix` are auto-selected from
+# `system.mode` and ignored here:
+#   - debug   -> colored, human-readable console (CapitalColorLevelEncoder)
+#   - release -> structured JSON, no ANSI color, no prefix (for log aggregators)
+# The remaining keys below are honored in both modes.
+zap:
+  level: info
+  director: log
+  show-line: true
+  stacktrace-key: stacktrace
+  log-in-console: true
+  max-backups: 7
+  retention-day: 30
+
+# email service. host/from and the password secret are per-deployment.
+email:
+  host: smtp.example.org
+  port: 25
+  from: no-reply@example.org
+  nickname: "Antelope"
+  password: "" # ANTELOPE_EMAIL_PASSWORD (when auth-type != none)
+  # auth-type: plain | login | crammd5 | none. MUST be quoted — an unquoted
+  # `no`/`none` is parsed as a YAML boolean and silently falls back to plain.
+  auth-type: "none"
+  # tls-policy: opportunistic | mandatory | disabled.
+  tls-policy: "disabled"
+
+cors:
+  mode: allow-all
+  whitelist: []
+
+# system config.
+system:
+  port: 8086
+  mode: debug
+  # The single bootstrap admin, seeded (or promoted to "super") on first boot.
+  # Override via ANTELOPE_SYSTEM_SUPER_USER.
+  super-user: admin@antelope.dev
+  # Initial password for the seeded super-user. Set via
+  # ANTELOPE_SYSTEM_SUPER_USER_PASSWORD; required (and must be non-default) in
+  # release mode.
+  super-user-password: ""
+  # Base64-encoded 32-byte AES-256 key used to encrypt per-user storage/LLM
+  # credentials (and the agent Daytona key) at rest in Postgres. Leave unset to
+  # store them unencrypted (still durable). Generate with `openssl rand -base64 32`
+  # and supply via ANTELOPE_SYSTEM_ENCRYPT_KEY (do not commit a real key).
+  encrypt-key: ""
+
+# agent (trpc-agent-go integration) — platform-wide defaults.
+# Per-user settings (LLM provider/model, MCP servers, workspace bucket, Daytona
+# key) live in the database; only fall-back defaults are configured here.
+agent:
+  app-name: antelope
+  daytona:
+    # MUST equal the snapshot registered by scripts/daytona/build-snapshot.sh
+    # (its SNAPSHOT_NAME, default "antelope-bio"). Empty falls back to the
+    # Daytona default image, which does NOT contain the bundled bioinformatics
+    # stack — build + register the snapshot before first use.
+    default-snapshot: antelope-bio
+    # MUST match the workspace path baked into that snapshot's Dockerfile
+    # (scripts/daytona/Dockerfile). Change only in lock-step with a rebuilt
+    # snapshot. Absolute path required.
+    workspace-path: /home/user/trpc_agent_workspace
+    sandbox-timeout-sec: 600
+    # Idle-archive the sandbox after this many minutes; 0 disables.
+    auto-stop-minutes: 30
+    # DEV ONLY: skip TLS verification on in-sandbox transfers so a local
+    # self-signed MinIO can use the direct streaming path. Never enable in
+    # production — give the sandbox a trusted cert instead. Default false.
+    insecure-tls-transfers: false
+  skills:
+    # The built-in library (~700 bioinformatics skills, generated by
+    # `make skills-bundle` from the submodules under skills/upstream/).
+    #
+    # bundle-root is only consulted by builds WITHOUT the `skills` build tag —
+    # `make dev`, `go run . web`, `make server`. Leave it empty to use the
+    # bundler's own output path. If no bundle has been generated the agent just
+    # runs without built-in skills and says so at start-up.
+    bundle-root: ""
+    # Release and container builds embed the bundle in the binary and unpack it
+    # here once (content-hash gated, so restarts reuse it). Leave empty for a
+    # directory under the OS temp dir; set an absolute persistent path to keep
+    # it across restarts.
+    bundle-cache-root: ""
+    # Per-user uploaded skills, one subdirectory per user id.
+    user-cache-root: /tmp/antelope-skills
+  artifacts:
+    presigned-ttl-seconds: 3600
+
+# External St. Jude CAB ("nightingale") upstream that /cab/* proxies and the
+# agent's CAB tools call. Override per-deployment via ANTELOPE_CAB_BASE_URL.
+cab:
+  base-url: http://nightingale-dev.stjude.org:8080
